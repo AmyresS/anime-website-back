@@ -1,4 +1,7 @@
 const Anime = require('../models/animeModel');
+const fs = require('fs');
+const path = require('path');
+const networkPath = 'E:/Media/Anime';
 
 exports.getAllAnime = async (req, res) => {
     try {
@@ -44,4 +47,52 @@ exports.deleteAnime = async (req, res) => {
     } catch (error) {
         res.status(500).json({ message: 'Server error', error });
     }
+};
+
+exports.getAnimeEpisodes = async (req, res) => {
+    const animeTitle = req.params.title;
+    const animePath = path.join(networkPath, animeTitle);
+
+    // Читаємо файли в директорії
+    fs.readdir(animePath, (err, files) => {
+        if (err) return res.status(500).json({ message: 'Помилка при доступі до файлів', error: err });
+        
+        // Фільтруємо файли з розширенням .mkv та повертаємо їх як список епізодів
+        const episodes = files.filter(file => file.endsWith('.mkv'));
+        res.json(episodes);
+    });
+};
+
+exports.streamEpisode = (req, res) => {
+    const animeTitle = req.params.title;
+    const episode = req.params.episode;
+    const filePath = path.join(networkPath, animeTitle, episode);
+
+    // Перевірка на наявність файлу
+    fs.stat(filePath, (err, stats) => {
+        if (err) return res.status(404).json({ message: 'Файл не знайдено' });
+
+        // Налаштовуємо заголовки для потокового передавання
+        const { range } = req.headers;
+        if (!range) {
+            return res.status(416).send('Requires Range header');
+        }
+
+        const fileSize = stats.size;
+        const chunkSize = 10 ** 6; // 1MB chunks
+        const start = Number(range.replace(/\D/g, ""));
+        const end = Math.min(start + chunkSize, fileSize - 1);
+
+        const contentLength = end - start + 1;
+        const headers = {
+            'Content-Range': `bytes ${start}-${end}/${fileSize}`,
+            'Accept-Ranges': 'bytes',
+            'Content-Length': contentLength,
+            'Content-Type': 'video/mkv',
+        };
+
+        res.writeHead(206, headers);
+        const stream = fs.createReadStream(filePath, { start, end });
+        stream.pipe(res);
+    });
 };

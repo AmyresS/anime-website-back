@@ -8,4 +8,7 @@ router.post('/', animeController.createAnime);
 router.put('/:id', animeController.updateAnime);
 router.delete('/:id', animeController.deleteAnime);
 
+router.get('/:title/episodes', animeController.getAnimeEpisodes);
+router.get('/:title/episodes/:episode', animeController.streamEpisode);
+
 module.exports = router;
