@@ -57,11 +57,20 @@ exports.getAnimeEpisodes = async (req, res) => {
     fs.readdir(animePath, (err, files) => {
         if (err) return res.status(500).json({ message: 'Помилка при доступі до файлів', error: err });
         
-        // Фільтруємо файли з розширенням .mkv та повертаємо їх як список епізодів
-        const episodes = files.filter(file => file.endsWith('.mkv'));
+        // Фільтруємо файли з розширенням .mkv та сортуємо їх за номером епізоду
+        const episodes = files
+            .filter(file => file.endsWith('.mkv'))
+            .sort((a, b) => {
+                const numA = parseInt(a.match(/\[(\d+)\]/)?.[1] || '0', 10);
+                const numB = parseInt(b.match(/\[(\d+)\]/)?.[1] || '0', 10);
+                return numA - numB;
+            });
+
         res.json(episodes);
     });
 };
+
+
 
 exports.streamEpisode = (req, res) => {
     const animeTitle = req.params.title;
@@ -79,7 +88,7 @@ exports.streamEpisode = (req, res) => {
         }
 
         const fileSize = stats.size;
-        const chunkSize = 10 ** 6; // 1MB chunks
+        const chunkSize = 10 ** 6;
         const start = Number(range.replace(/\D/g, ""));
         const end = Math.min(start + chunkSize, fileSize - 1);
 
