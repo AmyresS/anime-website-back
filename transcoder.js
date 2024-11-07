@@ -8,7 +8,6 @@ const pool = require('./config/db');
 const queries = require('./config/queries');
 const { networkPath, maxConcurrentProcesses } = require('./config/config.js');
 
-// Налаштування логера
 const logger = createLogger({
   level: 'info',
   format: format.combine(
@@ -21,35 +20,72 @@ const logger = createLogger({
   ],
 });
 
-// Черга завдань для обмеження кількості одночасних процесів
 const queue = async.queue(async (task) => {
     try {
       await transcodeFile(task.filePath, task.animeTitle, task.episode);
     } catch (err) {
       logger.error(`Помилка при перекодуванні файлу ${task.filePath}: ${err}`);
-      throw err; // Замість callback, кидаємо помилку, яку обробить async.queue
+      throw err;
     }
   }, maxConcurrentProcesses);
 
-async function transcodeFile(filePath, animeTitle, episode) {
-  const fileName = path.basename(filePath, '.mkv');
-  const outputDir = path.join(networkPath, animeTitle, 'Processed', fileName);
-
-  try {
-    if (episode && episode.processed) {
-      logger.info(`Епізод "${fileName}" вже перекодований. Пропускаємо.`);
-      return;
+  async function getOrCreateAnimeId(animeTitle) {
+    let animeId;
+  
+    // Виконуємо транзакцію для безпечного створення або отримання anime_id
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+  
+      // Блокуємо таблицю `anime`, щоб уникнути конкурентних записів з однаковою назвою
+      const lockResult = await client.query('LOCK TABLE anime IN SHARE ROW EXCLUSIVE MODE');
+  
+      // Перевіряємо, чи аніме вже існує в БД
+      const selectResult = await client.query('SELECT id FROM anime WHERE title = $1', [animeTitle]);
+      if (selectResult.rowCount > 0) {
+        // Якщо запис існує, отримуємо його id
+        animeId = selectResult.rows[0].id;
+      } else {
+        // Якщо запису немає, створюємо його
+        const insertResult = await client.query(queries.INSERT_ANIME, [animeTitle, '', null, 0]);
+        animeId = insertResult.rows[0].id;
+      }
+  
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
     }
+  
+    return animeId;
+  }
+  
+  async function transcodeFile(filePath, animeTitle, episode) {
+    const fileName = path.basename(filePath, '.mkv');
+    const outputDir = path.join(networkPath, animeTitle, 'Processed', fileName);
+  
+    try {
+      if (episode && episode.processed) {
+        logger.info(`Епізод "${fileName}" вже перекодований. Пропускаємо.`);
+        return;
+      }
+  
+      // Отримуємо або створюємо animeId, блокуючи конкурентні записи
+      const animeId = await getOrCreateAnimeId(animeTitle);
+  
+      if (!episode) {
+        // Додаємо запис епізоду
+        await pool.query(queries.INSERT_EPISODE, [animeTitle, fileName, filePath, false]);
 
-    if (!episode) {
-      // Вставляємо новий запис у базу даних
-      await pool.query(queries.INSERT_EPISODE, [animeTitle, fileName, filePath, false]);
-    } else {
-      // Оновлюємо статус перед початком перекодування
-      await pool.query(queries.UPDATE_EPISODE_STATUS, [false, new Date(), null, episode.id]);
-    }
+        const episodeCountRes = await pool.query('SELECT COUNT(*) FROM episodes WHERE anime_id = $1', [animeId]);
+        const episodeCount = parseInt(episodeCountRes.rows[0].count, 10);
+        await pool.query(queries.UPDATE_ANIME_EPISODE_COUNT, [episodeCount, animeTitle]);
+      } else {
+        await pool.query(queries.UPDATE_EPISODE_STATUS, [false, new Date(), null, episode.id]);
+      }
 
-    // Перевіряємо чи існує вихідна директорія
     try {
       if (!fs.existsSync(outputDir)) {
         fs.mkdirSync(outputDir, { recursive: true });
@@ -59,7 +95,6 @@ async function transcodeFile(filePath, animeTitle, episode) {
       throw err;
     }
 
-    // Використовуємо ffprobe для отримання інформації про потоки
     ffmpeg.ffprobe(filePath, async (err, metadata) => {
       if (err) {
         logger.error(`Помилка при аналізі файлу ${filePath}: ${err}`);
@@ -67,53 +102,37 @@ async function transcodeFile(filePath, animeTitle, episode) {
         return;
       }
 
-      // Отримуємо відео, аудіо та субтитрові потоки
       const videoStreams = metadata.streams.filter(stream => stream.codec_type === 'video');
       const audioStreams = metadata.streams.filter(stream => stream.codec_type === 'audio');
       const subtitleStreams = metadata.streams.filter(stream => stream.codec_type === 'subtitle');
 
       let command = ffmpeg(filePath);
 
-      // Обробка відео
       if (videoStreams.length > 0) {
         const videoOutput = path.join(outputDir, 'video.mp4');
         command = command
           .output(videoOutput)
           .noAudio()
           .videoCodec('copy')
-          .outputOptions([
-            '-map 0:v:0',
-            '-sn'
-          ]);
+          .outputOptions(['-map 0:v:0', '-sn']);
       }
 
-      // Обробка аудіодоріжок
       audioStreams.forEach((audioStream, index) => {
         const audioOutput = path.join(outputDir, `audio_track_${index}.aac`);
         command = command
           .output(audioOutput)
           .noVideo()
           .audioCodec('copy')
-          .outputOptions([
-            `-map 0:a:${index}`,
-            '-vn',
-            '-sn'
-          ]);
+          .outputOptions([`-map 0:a:${index}`, '-vn', '-sn']);
       });
 
-      // Обробка субтитрів
       subtitleStreams.forEach((subtitleStream, index) => {
         const subtitleOutput = path.join(outputDir, `subs_${index}.vtt`);
         command = command
           .output(subtitleOutput)
           .noVideo()
           .noAudio()
-          .outputOptions([
-            `-map 0:s:${index}`,
-            '-vn',
-            '-an',
-            '-c:s webvtt'
-          ]);
+          .outputOptions([`-map 0:s:${index}`, '-vn', '-an', '-c:s webvtt']);
       });
 
       command
@@ -131,7 +150,6 @@ async function transcodeFile(filePath, animeTitle, episode) {
           logger.error(`Помилка при перекодуванні файлу ${filePath}: ${err}`);
           await pool.query(queries.UPDATE_EPISODE_ERROR, [err.message, false, animeTitle, fileName]);
 
-          // Видаляємо папку outputDir
           try {
             if (fs.existsSync(outputDir)) {
               fs.rmSync(outputDir, { recursive: true, force: true });
@@ -149,53 +167,45 @@ async function transcodeFile(filePath, animeTitle, episode) {
 }
 
 function watchAnimeDirectory() {
-    const watcher = chokidar.watch(networkPath, {
-      ignored: /(^|[\/\\])\..|Processed/, // Ігноруємо приховані файли та 'Processed' директорії
-      persistent: true,
-      depth: 3, // Оскільки тепер папка Raw знаходиться на глибині 3
-    });
-  
-    watcher
-      .on('add', async (filePath) => {
-        if (path.extname(filePath) === '.mkv' && filePath.includes(`${path.sep}Raw${path.sep}`)) {
-          const relativePath = path.relative(networkPath, filePath);
-          const pathParts = relativePath.split(path.sep);
-          
-          // Очікуємо шлях формату E:/Media/Anime/<назва аніме>/Raw/<файл>.mkv
-          if (pathParts.length < 3 || pathParts[1] !== 'Raw') {
-            logger.error(`Невірний шлях до файлу: ${filePath}`);
-            return;
-          }
-  
-          const animeTitle = pathParts[0];
-          const fileNameWithExt = pathParts[2];
-          const fileName = path.basename(fileNameWithExt, '.mkv');
-  
-          try {
-            // Перевіряємо, чи файл вже є в базі даних
-            const res = await pool.query(queries.SELECT_EPISODE, [animeTitle, fileName]);
-            let episode = res.rows[0];
-  
-            if (!episode) {
-              // Додаємо завдання в чергу
-              queue.push({ filePath, animeTitle });
-              
-            } else if (!episode.processed) {
-              // Додаємо завдання в чергу
-              queue.push({ filePath, animeTitle, episode });
-            } else {
-              //logger.info(`Епізод "${fileName}" вже перекодований. Пропускаємо.`);
-            }
-          } catch (err) {
-            logger.error(`Помилка при обробці файлу ${filePath}: ${err}`);
-          }
+  const watcher = chokidar.watch(networkPath, {
+    ignored: /(^|[\/\\])\..|Processed/,
+    persistent: true,
+    depth: 3,
+  });
+
+  watcher
+    .on('add', async (filePath) => {
+      if (path.extname(filePath) === '.mkv' && filePath.includes(`${path.sep}Raw${path.sep}`)) {
+        const relativePath = path.relative(networkPath, filePath);
+        const pathParts = relativePath.split(path.sep);
+
+        if (pathParts.length < 3 || pathParts[1] !== 'Raw') {
+          logger.error(`Невірний шлях до файлу: ${filePath}`);
+          return;
         }
-      })
-      .on('error', (error) => {
-        logger.error('Помилка спостерігача:', error);
-      });
-  }
-  
+
+        const animeTitle = pathParts[0];
+        const fileNameWithExt = pathParts[2];
+        const fileName = path.basename(fileNameWithExt, '.mkv');
+
+        try {
+          const res = await pool.query(queries.SELECT_EPISODE, [animeTitle, fileName]);
+          let episode = res.rows[0];
+
+          if (!episode) {
+            queue.push({ filePath, animeTitle });
+          } else if (!episode.processed) {
+            queue.push({ filePath, animeTitle, episode });
+          }
+        } catch (err) {
+          logger.error(`Помилка при обробці файлу ${filePath}: ${err}`);
+        }
+      }
+    })
+    .on('error', (error) => {
+      logger.error('Помилка спостерігача:', error);
+    });
+}
 
 try {
   watchAnimeDirectory();
