@@ -1,31 +1,67 @@
 const pool = require('../config/db');
+const queries = require('../config/queries');
 
 const Anime = {
+
     async getAll() {
-        const result = await pool.query('SELECT * FROM anime');
+        const result = await pool.query(queries.SELECT_ANIME);
         return result.rows;
     },
+
     async getById(id) {
-        const result = await pool.query('SELECT * FROM anime WHERE id = $1', [id]);
+        const result = await pool.query(queries.SELECT_ANIME_BY_ID, [id]);
         return result.rows[0];
     },
-    async create(data) {
-        const result = await pool.query(
-            'INSERT INTO anime (title, description, genre, episodes) VALUES ($1, $2, $3, $4) RETURNING *',
-            [data.title, data.description, data.genre, data.episodes]
-        );
+
+    async updateAnime(id, data) {
+        const result = await pool.query(queries.UPDATE_ANIME, [data.title, data.description, data.year_released, id]);
         return result.rows[0];
     },
-    async update(id, data) {
-        const result = await pool.query(
-            'UPDATE anime SET title = $1, description = $2, genre = $3, episodes = $4 WHERE id = $5 RETURNING *',
-            [data.title, data.description, data.genre, data.episodes, id]
-        );
+
+    async updateAnimeGenre(id, data) {
+      const result = await pool.query(queries.LINK_ANIME_GENRE, [id, data.genreId]);
+      return result.rows[0];
+    },
+
+    async deleteAnime(id) {
+        await pool.query(queries.DELETE_ANIME, [id]);
+    },
+
+    async searchByTitle(title) {
+        const values = [`%${title}%`];
+        const result = await pool.query(queries.SEARCH_ANIME, values);
+        return result.rows;
+    },
+    
+    async getGenres(animeId) {
+        const result = await pool.query(queries.GET_GENRES, [animeId]);
+        return result.rows;
+    },
+    
+    async addNewGenre(data){
+        const result = await pool.query(queries.INSERT_GENRE, [data.genre]);
         return result.rows[0];
     },
-    async delete(id) {
-        await pool.query('DELETE FROM anime WHERE id = $1', [id]);
+
+    async getAlternativeTitles(animeId) {
+        const result = await pool.query(queries.GET_ALTERNATIVE_TITLES, [animeId]);
+        return result.rows;
     },
+
+    async addNewAlternativeTitle(animeId, data) {
+        const result = await pool.query(queries.INSERT_ALTERNATIVE_TITLE, [animeId, data.title, data.language]);
+        return result.rows[0];
+    },
+
+    async getAnimeEpisodes(animeId) {
+        const result = await pool.query(queries.SELECT_EPISODES_BY_ANIME_ID, [animeId]);
+        return result.rows;
+    },
+
+    async getEpisode(animeId, data) {
+        const result = await pool.query(queries.GET_EPISODE_BY_ANIME_ID, [animeId, data.episodeNumber]);
+        return result.rows[0];
+    }
 };
 
 module.exports = Anime;

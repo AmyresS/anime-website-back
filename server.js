@@ -9,7 +9,6 @@ const app = express();
 app.use(cors());
 app.use(bodyParser.json());
 
-// Підключаємо маршрути для аніме
 app.use('/api/anime', animeRoutes);
 
 const PORT = process.env.PORT || 5000;
