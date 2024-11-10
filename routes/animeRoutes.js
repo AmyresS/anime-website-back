@@ -32,4 +32,14 @@ router.get('/:id/episodes', animeController.getAnimeEpisodes);
 // Маршрут для отримання конкретного епізоду за номером
 router.get('/:id/episode/:episodeNumber', animeController.getEpisode);
 
+// Маршрут для потокової передачі відео епізоду
+router.get('/:id/episode/:episodeNumber/video', animeController.streamEpisodeVideo);
+
+// Маршрут для потокової передачі аудіо епізоду
+router.get('/:id/episode/:episodeNumber/audio/:track', animeController.streamEpisodeAudio);
+
+// Маршрут для потокової передачі субтитрів епізоду
+router.get('/:id/episode/:episodeNumber/subtitles/:subTrack', animeController.streamEpisodeSubtitles);
+
+
 module.exports = router;

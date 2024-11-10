@@ -96,64 +96,67 @@ const queue = async.queue(async (task) => {
           return;
         }
 
-      const videoStreams = metadata.streams.filter(stream => stream.codec_type === 'video');
-      const audioStreams = metadata.streams.filter(stream => stream.codec_type === 'audio');
-      const subtitleStreams = metadata.streams.filter(stream => stream.codec_type === 'subtitle');
-
-      let command = ffmpeg(filePath);
-
-      if (videoStreams.length > 0) {
-        const videoOutput = path.join(outputDir, 'video.mp4');
-        command = command
-          .output(videoOutput)
-          .noAudio()
-          .videoCodec('copy')
-          .outputOptions(['-map 0:v:0', '-sn']);
-      }
-
-      audioStreams.forEach((audioStream, index) => {
-        const audioOutput = path.join(outputDir, `audio_track_${index}.aac`);
-        command = command
-          .output(audioOutput)
-          .noVideo()
-          .audioCodec('copy')
-          .outputOptions([`-map 0:a:${index}`, '-vn', '-sn']);
-      });
-
-      subtitleStreams.forEach((subtitleStream, index) => {
-        const subtitleOutput = path.join(outputDir, `subs_${index}.vtt`);
-        command = command
-          .output(subtitleOutput)
-          .noVideo()
-          .noAudio()
-          .outputOptions([`-map 0:s:${index}`, '-vn', '-an', '-c:s webvtt']);
-      });
-
-      command
-        .on('start', (commandLine) => {
-          logger.info('Команда FFmpeg: ' + commandLine);
-        })
-        .on('stderr', function(stderrLine) {
-          logger.warn('FFmpeg stderr: ' + stderrLine);
-        })
-        .on('end', async () => {
-          logger.info(`Перекодування завершено для ${filePath}`);
-          await pool.query(queries.UPDATE_EPISODE_SUCCESS, [true, new Date(), animeTitle, fileName]);
-        })
-        .on('error', async (err) => {
-          logger.error(`Помилка при перекодуванні файлу ${filePath}: ${err}`);
-          await pool.query(queries.UPDATE_EPISODE_ERROR, [err.message, false, animeTitle, fileName]);
-
-          try {
-            if (fs.existsSync(outputDir)) {
-              fs.rmSync(outputDir, { recursive: true, force: true });
-              logger.info(`Папку "${outputDir}" було видалено через помилку.`);
+        const videoStreams = metadata.streams.filter(stream => stream.codec_type === 'video');
+        const audioStreams = metadata.streams.filter(stream => stream.codec_type === 'audio');
+        const subtitleStreams = metadata.streams.filter(stream => stream.codec_type === 'subtitle');
+        
+        let command = ffmpeg(filePath);
+        
+        if (videoStreams.length > 0) {
+          const videoOutput = path.join(outputDir, 'video.mp4');
+          command = command
+            .output(videoOutput)
+            .noAudio()
+            .videoCodec('copy')
+            .outputOptions(['-map 0:v:0', '-sn']);
+        }
+        
+        audioStreams.forEach((audioStream, index) => {
+          const audioOutput = path.join(outputDir, `audio_track_${index}.aac`);
+          command = command
+            .output(audioOutput)
+            .noVideo()
+            .audioCodec('copy')
+            .outputOptions([`-map 0:a:${index}`, '-vn', '-sn']);
+        });
+        
+        subtitleStreams.forEach((subtitleStream, index) => {
+          // Отримуємо назву субтитрової доріжки або даємо стандартне ім'я
+          const subtitleName = subtitleStream.tags && subtitleStream.tags.title ? subtitleStream.tags.title : `subs_${index}`;
+          const subtitleOutput = path.join(outputDir, `${subtitleName}.ass`);
+        
+          command = command
+            .output(subtitleOutput)
+            .noVideo()
+            .noAudio()
+            .outputOptions([`-map 0:s:${index}`, '-vn', '-an', '-c:s copy']);
+        });
+        
+        command
+          .on('start', (commandLine) => {
+            logger.info('Команда FFmpeg: ' + commandLine);
+          })
+          .on('stderr', function(stderrLine) {
+            logger.warn('FFmpeg stderr: ' + stderrLine);
+          })
+          .on('end', async () => {
+            logger.info(`Перекодування завершено для ${filePath}`);
+            await pool.query(queries.UPDATE_EPISODE_SUCCESS, [true, new Date(), animeTitle, fileName]);
+          })
+          .on('error', async (err) => {
+            logger.error(`Помилка при перекодуванні файлу ${filePath}: ${err}`);
+            await pool.query(queries.UPDATE_EPISODE_ERROR, [err.message, false, animeTitle, fileName]);
+        
+            try {
+              if (fs.existsSync(outputDir)) {
+                fs.rmSync(outputDir, { recursive: true, force: true });
+                logger.info(`Папку "${outputDir}" було видалено через помилку.`);
+              }
+            } catch (fsErr) {
+              logger.error(`Помилка при видаленні директорії ${outputDir}: ${fsErr}`);
             }
-          } catch (fsErr) {
-            logger.error(`Помилка при видаленні директорії ${outputDir}: ${fsErr}`);
-          }
-        })
-        .run();
+          })
+          .run();
     });
   } catch (err) {
     logger.error(`Помилка при обробці файлу ${filePath}: ${err}`);

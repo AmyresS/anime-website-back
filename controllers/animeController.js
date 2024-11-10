@@ -1,4 +1,9 @@
 const Anime = require('../models/animeModel');
+const pool = require('../config/db');
+const fs = require('fs');
+const path = require('path');
+const { networkPath } = require('../config/config');
+
 
 exports.getAllAnime = async (req, res) => {
     try {
@@ -99,3 +104,114 @@ exports.getEpisode = async (req, res) => {
         res.status(500).json({ message: 'Помилка сервера', error });
     }
 };
+
+exports.streamEpisodeVideo = async (req, res) => {
+    const { id, episodeNumber } = req.params;
+
+    try {
+        // Отримуємо назву аніме (title) та назву епізоду (episode_name)
+        const animeQuery = await pool.query('SELECT title FROM anime WHERE id = $1', [id]);
+        const episodeQuery = await pool.query('SELECT episode_name FROM episodes WHERE anime_id = $1 AND episode_number = $2', [id, episodeNumber]);
+
+        if (animeQuery.rowCount === 0 || episodeQuery.rowCount === 0) {
+            return res.status(404).json({ message: 'Аніме або епізод не знайдено' });
+        }
+
+        const animeTitle = animeQuery.rows[0].title;
+        const episodeName = episodeQuery.rows[0].episode_name;
+
+        const episodePath = path.join(networkPath, animeTitle, 'Processed', episodeName, 'video.mp4');
+
+        fs.stat(episodePath, (err, stats) => {
+            if (err) {
+                return res.status(404).json({ message: 'Відеофайл не знайдено' });
+            }
+
+            const range = req.headers.range;
+            if (!range) {
+                return res.status(416).send('Requires Range header');
+            }
+
+            const CHUNK_SIZE = 10 ** 6; // 1MB
+            const start = Number(range.replace(/\D/g, ""));
+            const end = Math.min(start + CHUNK_SIZE, stats.size - 1);
+
+            const contentLength = end - start + 1;
+            const headers = {
+                "Content-Range": `bytes ${start}-${end}/${stats.size}`,
+                "Accept-Ranges": "bytes",
+                "Content-Length": contentLength,
+                "Content-Type": "video/mp4",
+            };
+
+            res.writeHead(206, headers);
+
+            const videoStream = fs.createReadStream(episodePath, { start, end });
+            videoStream.pipe(res);
+        });
+    } catch (error) {
+        console.error('Помилка при потоковій передачі відео:', error);
+        res.status(500).json({ message: 'Помилка сервера' });
+    }
+};
+
+exports.streamEpisodeAudio = async (req, res) => {
+    const { id, episodeNumber, track } = req.params;
+
+    try {
+        const animeQuery = await pool.query('SELECT title FROM anime WHERE id = $1', [id]);
+        const episodeQuery = await pool.query('SELECT episode_name FROM episodes WHERE anime_id = $1 AND episode_number = $2', [id, episodeNumber]);
+
+        if (animeQuery.rowCount === 0 || episodeQuery.rowCount === 0) {
+            return res.status(404).json({ message: 'Аніме або епізод не знайдено' });
+        }
+
+        const animeTitle = animeQuery.rows[0].title;
+        const episodeName = episodeQuery.rows[0].episode_name;
+
+        const audioPath = path.join(networkPath, animeTitle, 'Processed', episodeName, `audio_track_${track}.aac`);
+
+        fs.stat(audioPath, (err, stats) => {
+            if (err) {
+                return res.status(404).json({ message: 'Аудіофайл не знайдено' });
+            }
+
+            res.setHeader("Content-Type", "audio/aac");
+            fs.createReadStream(audioPath).pipe(res);
+        });
+    } catch (error) {
+        console.error('Помилка при потоковій передачі аудіо:', error);
+        res.status(500).json({ message: 'Помилка сервера' });
+    }
+};
+
+exports.streamEpisodeSubtitles = async (req, res) => {
+    const { id, episodeNumber, subTrack } = req.params;
+
+    try {
+        const animeQuery = await pool.query('SELECT title FROM anime WHERE id = $1', [id]);
+        const episodeQuery = await pool.query('SELECT episode_name FROM episodes WHERE anime_id = $1 AND episode_number = $2', [id, episodeNumber]);
+
+        if (animeQuery.rowCount === 0 || episodeQuery.rowCount === 0) {
+            return res.status(404).json({ message: 'Аніме або епізод не знайдено' });
+        }
+
+        const animeTitle = animeQuery.rows[0].title;
+        const episodeName = episodeQuery.rows[0].episode_name;
+
+        const subtitlePath = path.join(networkPath, animeTitle, 'Processed', episodeName, `subs_${subTrack}.vtt`);
+
+        fs.stat(subtitlePath, (err, stats) => {
+            if (err) {
+                return res.status(404).json({ message: 'Файл субтитрів не знайдено' });
+            }
+
+            res.setHeader("Content-Type", "text/vtt");
+            fs.createReadStream(subtitlePath).pipe(res);
+        });
+    } catch (error) {
+        console.error('Помилка при потоковій передачі субтитрів:', error);
+        res.status(500).json({ message: 'Помилка сервера' });
+    }
+};
+
