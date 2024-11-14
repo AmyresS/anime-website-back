@@ -109,7 +109,6 @@ exports.streamEpisodeVideo = async (req, res) => {
     const { id, episodeNumber } = req.params;
 
     try {
-        // Отримуємо назву аніме (title) та назву епізоду (episode_name)
         const animeQuery = await pool.query('SELECT title FROM anime WHERE id = $1', [id]);
         const episodeQuery = await pool.query('SELECT episode_name FROM episodes WHERE anime_id = $1 AND episode_number = $2', [id, episodeNumber]);
 
@@ -132,7 +131,7 @@ exports.streamEpisodeVideo = async (req, res) => {
                 return res.status(416).send('Requires Range header');
             }
 
-            const CHUNK_SIZE = 10 ** 6; // 1MB
+            const CHUNK_SIZE = 10 ** 6;
             const start = Number(range.replace(/\D/g, ""));
             const end = Math.min(start + CHUNK_SIZE, stats.size - 1);
 
@@ -176,8 +175,27 @@ exports.streamEpisodeAudio = async (req, res) => {
                 return res.status(404).json({ message: 'Аудіофайл не знайдено' });
             }
 
-            res.setHeader("Content-Type", "audio/aac");
-            fs.createReadStream(audioPath).pipe(res);
+            const range = req.headers.range;
+            if (!range) {
+                return res.status(416).send('Requires Range header');
+            }
+
+            const CHUNK_SIZE = 10 ** 6;
+            const start = Number(range.replace(/\D/g, ""));
+            const end = Math.min(start + CHUNK_SIZE, stats.size - 1);
+
+            const contentLength = end - start + 1;
+            const headers = {
+                "Content-Range": `bytes ${start}-${end}/${stats.size}`,
+                "Accept-Ranges": "bytes",
+                "Content-Length": contentLength,
+                "Content-Type": "audio/aac",
+            };
+
+            res.writeHead(206, headers);
+
+            const audioStream = fs.createReadStream(audioPath, { start, end });
+            audioStream.pipe(res);
         });
     } catch (error) {
         console.error('Помилка при потоковій передачі аудіо:', error);
@@ -185,8 +203,8 @@ exports.streamEpisodeAudio = async (req, res) => {
     }
 };
 
-exports.streamEpisodeSubtitles = async (req, res) => {
-    const { id, episodeNumber, subTrack } = req.params;
+exports.getAvailableSubtitles = async (req, res) => {
+    const { id, episodeNumber } = req.params;
 
     try {
         const animeQuery = await pool.query('SELECT title FROM anime WHERE id = $1', [id]);
@@ -199,14 +217,50 @@ exports.streamEpisodeSubtitles = async (req, res) => {
         const animeTitle = animeQuery.rows[0].title;
         const episodeName = episodeQuery.rows[0].episode_name;
 
-        const subtitlePath = path.join(networkPath, animeTitle, 'Processed', episodeName, `subs_${subTrack}.vtt`);
+        const subtitlesDir = path.join(networkPath, animeTitle, 'Processed', episodeName);
+
+        fs.readdir(subtitlesDir, (err, files) => {
+            if (err) {
+                return res.status(500).json({ message: 'Помилка при зчитуванні субтитрів' });
+            }
+
+            const subtitles = files
+                .filter(file => file.endsWith('.ass'))
+                .map(file => ({
+                    name: file.split('.')[0],
+                    path: file
+                }));
+
+            res.json({ subtitles });
+        });
+    } catch (error) {
+        console.error('Помилка при отриманні субтитрів:', error);
+        res.status(500).json({ message: 'Помилка сервера' });
+    }
+};
+
+exports.streamSelectedSubtitle = async (req, res) => {
+    const { id, episodeNumber, subtitleName } = req.params;
+
+    try {
+        const animeQuery = await pool.query('SELECT title FROM anime WHERE id = $1', [id]);
+        const episodeQuery = await pool.query('SELECT episode_name FROM episodes WHERE anime_id = $1 AND episode_number = $2', [id, episodeNumber]);
+
+        if (animeQuery.rowCount === 0 || episodeQuery.rowCount === 0) {
+            return res.status(404).json({ message: 'Аніме або епізод не знайдено' });
+        }
+
+        const animeTitle = animeQuery.rows[0].title;
+        const episodeName = episodeQuery.rows[0].episode_name;
+
+        const subtitlePath = path.join(networkPath, animeTitle, 'Processed', episodeName, `${subtitleName}.ass`);
 
         fs.stat(subtitlePath, (err, stats) => {
             if (err) {
                 return res.status(404).json({ message: 'Файл субтитрів не знайдено' });
             }
 
-            res.setHeader("Content-Type", "text/vtt");
+            res.setHeader("Content-Type", "text/plain; charset=utf-8");
             fs.createReadStream(subtitlePath).pipe(res);
         });
     } catch (error) {
@@ -214,4 +268,6 @@ exports.streamEpisodeSubtitles = async (req, res) => {
         res.status(500).json({ message: 'Помилка сервера' });
     }
 };
+
+
 

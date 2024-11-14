@@ -8,6 +8,8 @@ const pool = require('./config/db');
 const queries = require('./config/queries');
 const { networkPath, maxConcurrentProcesses } = require('./config/config.js');
 
+const processingFiles = new Set();
+
 const logger = createLogger({
   level: 'info',
   format: format.combine(
@@ -66,101 +68,136 @@ const queue = async.queue(async (task) => {
     const fileName = path.basename(filePath, '.mkv');
     const outputDir = path.join(networkPath, animeTitle, 'Processed', fileName);
 
+    // Перевіряємо, чи файл вже обробляється
+    if (processingFiles.has(filePath)) {
+      logger.info(`Файл "${filePath}" вже обробляється. Пропускаємо.`);
+      return;
+    }
+
+    // Додаємо файл до оброблюваних
+    processingFiles.add(filePath);
+
     try {
-      if (episode && episode.processed) {
-        logger.info(`Епізод "${fileName}" вже перекодований. Пропускаємо.`);
-        return;
-      }
-
-      const animeId = await getOrCreateAnimeId(animeTitle);
-
-      if (!episode) {
-        // Вставляємо новий запис з номером епізоду
-        await pool.query(queries.INSERT_EPISODE, [animeTitle, episodeNumber, fileName, filePath, false]);
-
-        const episodeCountRes = await pool.query('SELECT COUNT(*) FROM episodes WHERE anime_id = $1', [animeId]);
-        const episodeCount = parseInt(episodeCountRes.rows[0].count, 10);
-        await pool.query(queries.UPDATE_ANIME_EPISODE_COUNT, [episodeCount, animeTitle]);
-      } else {
-        await pool.query(queries.UPDATE_EPISODE_STATUS, [false, new Date(), null, episode.id]);
-      }
-
-      if (!fs.existsSync(outputDir)) {
-        fs.mkdirSync(outputDir, { recursive: true });
-      }
-
-      ffmpeg.ffprobe(filePath, async (err, metadata) => {
-        if (err) {
-          logger.error(`Помилка при аналізі файлу ${filePath}: ${err}`);
-          await pool.query(queries.UPDATE_EPISODE_ERROR, [err.message, false, animeTitle, fileName]);
-          return;
+        if (episode && episode.processed) {
+            logger.info(`Епізод "${fileName}" вже перекодований. Пропускаємо.`);
+            return;
         }
 
-        const videoStreams = metadata.streams.filter(stream => stream.codec_type === 'video');
-        const audioStreams = metadata.streams.filter(stream => stream.codec_type === 'audio');
-        const subtitleStreams = metadata.streams.filter(stream => stream.codec_type === 'subtitle');
-        
-        let command = ffmpeg(filePath);
-        
-        if (videoStreams.length > 0) {
-          const videoOutput = path.join(outputDir, 'video.mp4');
-          command = command
-            .output(videoOutput)
-            .noAudio()
-            .videoCodec('copy')
-            .outputOptions(['-map 0:v:0', '-sn']);
+        const animeId = await getOrCreateAnimeId(animeTitle);
+        let episodeId;
+
+        if (!episode) {
+            // Вставляємо новий запис для епізоду і одразу отримуємо його id
+            const insertResult = await pool.query(queries.INSERT_EPISODE, [animeTitle, episodeNumber, fileName, filePath, false]);
+            episodeId = insertResult.rows[0].id;
+
+            const episodeCountRes = await pool.query('SELECT COUNT(*) FROM episodes WHERE anime_id = $1', [animeId]);
+            const episodeCount = parseInt(episodeCountRes.rows[0].count, 10);
+            await pool.query(queries.UPDATE_ANIME_EPISODE_COUNT, [episodeCount, animeTitle]);
+        } else {
+            episodeId = episode.id;
+            await pool.query(queries.UPDATE_EPISODE_STATUS, [false, new Date(), null, episodeId]);
         }
-        
-        audioStreams.forEach((audioStream, index) => {
-          const audioOutput = path.join(outputDir, `audio_track_${index}.aac`);
-          command = command
-            .output(audioOutput)
-            .noVideo()
-            .audioCodec('copy')
-            .outputOptions([`-map 0:a:${index}`, '-vn', '-sn']);
-        });
-        
-        subtitleStreams.forEach((subtitleStream, index) => {
-          // Отримуємо назву субтитрової доріжки або даємо стандартне ім'я
-          const subtitleName = subtitleStream.tags && subtitleStream.tags.title ? subtitleStream.tags.title : `subs_${index}`;
-          const subtitleOutput = path.join(outputDir, `${subtitleName}.ass`);
-        
-          command = command
-            .output(subtitleOutput)
-            .noVideo()
-            .noAudio()
-            .outputOptions([`-map 0:s:${index}`, '-vn', '-an', '-c:s copy']);
-        });
-        
-        command
-          .on('start', (commandLine) => {
-            logger.info('Команда FFmpeg: ' + commandLine);
-          })
-          .on('stderr', function(stderrLine) {
-            logger.warn('FFmpeg stderr: ' + stderrLine);
-          })
-          .on('end', async () => {
-            logger.info(`Перекодування завершено для ${filePath}`);
-            await pool.query(queries.UPDATE_EPISODE_SUCCESS, [true, new Date(), animeTitle, fileName]);
-          })
-          .on('error', async (err) => {
-            logger.error(`Помилка при перекодуванні файлу ${filePath}: ${err}`);
-            await pool.query(queries.UPDATE_EPISODE_ERROR, [err.message, false, animeTitle, fileName]);
-        
-            try {
-              if (fs.existsSync(outputDir)) {
-                fs.rmSync(outputDir, { recursive: true, force: true });
-                logger.info(`Папку "${outputDir}" було видалено через помилку.`);
-              }
-            } catch (fsErr) {
-              logger.error(`Помилка при видаленні директорії ${outputDir}: ${fsErr}`);
+
+        if (!fs.existsSync(outputDir)) {
+            fs.mkdirSync(outputDir, { recursive: true });
+        }
+
+        ffmpeg.ffprobe(filePath, async (err, metadata) => {
+            if (err) {
+                logger.error(`Помилка при аналізі файлу ${filePath}: ${err}`);
+                await pool.query(queries.UPDATE_EPISODE_ERROR, [err.message, false, animeTitle, fileName]);
+                return;
             }
-          })
-          .run();
-    });
-  } catch (err) {
-    logger.error(`Помилка при обробці файлу ${filePath}: ${err}`);
-  }
+
+            const videoStreams = metadata.streams.filter(stream => stream.codec_type === 'video');
+            const audioStreams = metadata.streams.filter(stream => stream.codec_type === 'audio');
+            const subtitleStreams = metadata.streams.filter(stream => stream.codec_type === 'subtitle');
+
+            let command = ffmpeg(filePath);
+
+            if (videoStreams.length > 0) {
+              const videoOutput = path.join(outputDir, 'video.mp4');
+              command = command
+                  .output(videoOutput)
+                  .noAudio()
+                  .videoCodec('copy')
+                  .outputOptions(['-map 0:v:0', '-sn']);
+
+              // Додаємо запис про відео у таблицю media_files
+              await pool.query(queries.INSERT_MEDIA_FILE, [episodeId, 'video', videoOutput, null]);
+          }
+
+          audioStreams.forEach(async (audioStream, index) => {
+              const language = audioStream.tags && audioStream.tags.language ? audioStream.tags.language : null;
+              const audioName = audioStream.tags && audioStream.tags.title ? audioStream.tags.title : `audio_track_${index}`;
+              const audioOutput = path.join(outputDir, `${audioName}.aac`);
+              
+              command = command
+                  .output(audioOutput)
+                  .noVideo()
+                  .audioCodec('copy')
+                  .outputOptions([`-map 0:a:${index}`, '-vn', '-sn']);
+
+              // Додаємо запис про аудіо у таблицю media_files
+              try {
+                await pool.query(queries.INSERT_MEDIA_FILE, [episodeId, 'audio', audioOutput, language]);
+              } catch (dbErr) {
+                  if (dbErr.code === '23505') {
+                      logger.info(`Дублюючий запис для аудіо, пропускаємо вставку.`);
+                  } else {
+                      throw dbErr;
+                  }
+              }            
+          });
+
+          subtitleStreams.forEach(async (subtitleStream, index) => {
+              const language = subtitleStream.tags && subtitleStream.tags.language ? subtitleStream.tags.language : null;
+              const subtitleName = subtitleStream.tags && subtitleStream.tags.title ? subtitleStream.tags.title : `subs_${index}`;
+              const subtitleOutput = path.join(outputDir, `${subtitleName}.ass`);
+              
+              command = command
+                  .output(subtitleOutput)
+                  .noVideo()
+                  .noAudio()
+                  .outputOptions([`-map 0:s:${index}`, '-vn', '-an', '-c:s copy']);
+
+              // Додаємо запис про субтитри у таблицю media_files
+              await pool.query(queries.INSERT_MEDIA_FILE, [episodeId, 'subtitles', subtitleOutput, language]);
+          });
+
+            command
+                .on('start', (commandLine) => {
+                    logger.info('Команда FFmpeg: ' + commandLine);
+                })
+                .on('stderr', function(stderrLine) {
+                    logger.warn('FFmpeg stderr: ' + stderrLine);
+                })
+                .on('end', async () => {
+                    logger.info(`Перекодування завершено для ${filePath}`);
+                    await pool.query(queries.UPDATE_EPISODE_SUCCESS, [true, new Date(), animeTitle, fileName]);
+                })
+                .on('error', async (err) => {
+                    logger.error(`Помилка при перекодуванні файлу ${filePath}: ${err}`);
+                    await pool.query(queries.UPDATE_EPISODE_ERROR, [err.message, false, animeTitle, fileName]);
+
+                    try {
+                        if (fs.existsSync(outputDir)) {
+                            fs.rmSync(outputDir, { recursive: true, force: true });
+                            logger.info(`Папку "${outputDir}" було видалено через помилку.`);
+                        }
+                    } catch (fsErr) {
+                        logger.error(`Помилка при видаленні директорії ${outputDir}: ${fsErr}`);
+                    }
+                })
+                .run();
+        });
+    } catch (err) {
+        logger.error(`Помилка при обробці файлу ${filePath}: ${err}`);
+    } finally {
+        // Переконаємося, що прапор буде знятий навіть у разі помилки
+        processingFiles.delete(filePath);
+    }
 }
 
 function watchAnimeDirectory() {
@@ -186,7 +223,7 @@ function watchAnimeDirectory() {
 
           for (let i = 0; i < files.length; i++) {
             const file = files[i];
-            const episodeNumber = i + 1; // Номер епізоду
+            const episodeNumber = i + 1;
             const filePath = path.join(dirPath, file);
             const fileName = path.basename(file, '.mkv');
 

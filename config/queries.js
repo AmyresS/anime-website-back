@@ -28,10 +28,26 @@ module.exports = {
       WHERE anime_id = $1
   `,
 
+  // Запит для отримання шляху та мови медіафайлу за айді епізоду та типом файлу
+  SELECT_MEDIA_BY_EPISODE_AND_TYPE: `
+      SELECT file_path, language 
+      FROM media_files 
+      WHERE episode_id = $1 AND file_type = $2
+  `,
+
+  // Запит для отримання айді епізоду за айді аніме та номером епізоду
+  SELECT_EPISODE_ID_BY_ANIME_AND_NUMBER: `
+      SELECT id 
+      FROM episodes 
+      WHERE anime_id = $1 AND episode_number = $2
+  `,
+
+
   // Запит для вставки нового епізоду
   INSERT_EPISODE: `
       INSERT INTO episodes (anime_id, episode_number, episode_name, file_path, processed) 
       VALUES ((SELECT id FROM anime WHERE title = $1), $2, $3, $4, $5)
+      RETURNING id
   `,
 
   // Запит для оновлення статусу обробки епізоду
@@ -105,6 +121,12 @@ module.exports = {
       WHERE LOWER(a.title) LIKE LOWER($1) 
       OR LOWER(at.title) LIKE LOWER($1)
   `,
+
+  // Запит для вставки нового медіафайлу
+  INSERT_MEDIA_FILE: `
+    INSERT INTO media_files (episode_id, file_type, file_path, language) 
+    VALUES ($1, $2, $3, $4)
+`,
 
   // Запит для отримання жанрів аніме із таблиці `anime_genres`
   GET_GENRES: `
