@@ -24,9 +24,9 @@ const logger = createLogger({
 
 const queue = async.queue(async (task) => {
   try {
-    await transcodeFile(task.filePath, task.animeTitle, task.episodeNumber, task.episode);
+    await transcodeFile(task.fileName, task.animeTitle, task.episodeNumber, task.episode);
   } catch (err) {
-    logger.error(`Помилка при перекодуванні файлу ${task.filePath}: ${err}`);
+    logger.error(`Помилка при перекодуванні файлу ${task.fileName}: ${err}`);
     throw err;
   }
 }, maxConcurrentProcesses);
@@ -64,18 +64,19 @@ const queue = async.queue(async (task) => {
     return animeId;
   }
   
-  async function transcodeFile(filePath, animeTitle, episodeNumber, episode) {
-    const fileName = path.basename(filePath, '.mkv');
+  async function transcodeFile(fileName, animeTitle, episodeNumber, episode) {
+    // const fileName = path.basename(filePath, '.mkv');
+    const originalDir = path.join(animeTitle, 'Raw', `${fileName}.mkv`);
     const outputDir = path.join(networkPath, animeTitle, 'Processed', fileName);
 
     // Перевіряємо, чи файл вже обробляється
-    if (processingFiles.has(filePath)) {
-      logger.info(`Файл "${filePath}" вже обробляється. Пропускаємо.`);
+    if (processingFiles.has(fileName)) {
+      logger.info(`Файл "${fileName}" вже обробляється. Пропускаємо.`);
       return;
     }
 
     // Додаємо файл до оброблюваних
-    processingFiles.add(filePath);
+    processingFiles.add(fileName);
 
     try {
         if (episode && episode.processed) {
@@ -88,12 +89,12 @@ const queue = async.queue(async (task) => {
 
         if (!episode) {
             // Вставляємо новий запис для епізоду і одразу отримуємо його id
-            const insertResult = await pool.query(queries.INSERT_EPISODE, [animeTitle, episodeNumber, fileName, filePath, false]);
+            const insertResult = await pool.query(queries.INSERT_EPISODE, [animeTitle, episodeNumber, fileName, originalDir, false]);
             episodeId = insertResult.rows[0].id;
 
-            const episodeCountRes = await pool.query('SELECT COUNT(*) FROM episodes WHERE anime_id = $1', [animeId]);
+            const episodeCountRes = await pool.query(queries.SELECT_EPISODES_COUNT, [animeId]);
             const episodeCount = parseInt(episodeCountRes.rows[0].count, 10);
-            await pool.query(queries.UPDATE_ANIME_EPISODE_COUNT, [episodeCount, animeTitle]);
+            await pool.query(queries.UPDATE_ANIME_EPISODE_COUNT, [episodeCount, animeId]);
         } else {
             episodeId = episode.id;
             await pool.query(queries.UPDATE_EPISODE_STATUS, [false, new Date(), null, episodeId]);
@@ -103,10 +104,10 @@ const queue = async.queue(async (task) => {
             fs.mkdirSync(outputDir, { recursive: true });
         }
 
-        ffmpeg.ffprobe(filePath, async (err, metadata) => {
+        ffmpeg.ffprobe(path.join(networkPath, originalDir), async (err, metadata) => {
             if (err) {
-                logger.error(`Помилка при аналізі файлу ${filePath}: ${err}`);
-                await pool.query(queries.UPDATE_EPISODE_ERROR, [err.message, false, animeTitle, fileName]);
+                logger.error(`Помилка при аналізі файлу ${fileName}: ${err}`);
+                await pool.query(queries.UPDATE_EPISODE_ERROR, [err.message, false, episodeId]);
                 return;
             }
 
@@ -114,7 +115,7 @@ const queue = async.queue(async (task) => {
             const audioStreams = metadata.streams.filter(stream => stream.codec_type === 'audio');
             const subtitleStreams = metadata.streams.filter(stream => stream.codec_type === 'subtitle');
 
-            let command = ffmpeg(filePath);
+            let command = ffmpeg(path.join(networkPath, originalDir)); // !!! originalDir or fileName (was filePath)
 
             if (videoStreams.length > 0) {
               const videoOutput = path.join(outputDir, 'video.mp4');
@@ -125,7 +126,7 @@ const queue = async.queue(async (task) => {
                   .outputOptions(['-map 0:v:0', '-sn']);
 
               // Додаємо запис про відео у таблицю media_files
-              await pool.query(queries.INSERT_MEDIA_FILE, [episodeId, 'video', videoOutput, null]);
+              await pool.query(queries.INSERT_MEDIA_FILE, [episodeId, 'video', videoOutput, 'Video', null]);
           }
 
           audioStreams.forEach(async (audioStream, index) => {
@@ -141,7 +142,7 @@ const queue = async.queue(async (task) => {
 
               // Додаємо запис про аудіо у таблицю media_files
               try {
-                await pool.query(queries.INSERT_MEDIA_FILE, [episodeId, 'audio', audioOutput, language]);
+                await pool.query(queries.INSERT_MEDIA_FILE, [episodeId, 'audio', audioOutput, audioName, language]);
               } catch (dbErr) {
                   if (dbErr.code === '23505') {
                       logger.info(`Дублюючий запис для аудіо, пропускаємо вставку.`);
@@ -163,7 +164,7 @@ const queue = async.queue(async (task) => {
                   .outputOptions([`-map 0:s:${index}`, '-vn', '-an', '-c:s copy']);
 
               // Додаємо запис про субтитри у таблицю media_files
-              await pool.query(queries.INSERT_MEDIA_FILE, [episodeId, 'subtitles', subtitleOutput, language]);
+              await pool.query(queries.INSERT_MEDIA_FILE, [episodeId, 'subtitles', subtitleOutput, subtitleName, language]);
           });
 
             command
@@ -174,12 +175,12 @@ const queue = async.queue(async (task) => {
                     logger.warn('FFmpeg stderr: ' + stderrLine);
                 })
                 .on('end', async () => {
-                    logger.info(`Перекодування завершено для ${filePath}`);
-                    await pool.query(queries.UPDATE_EPISODE_SUCCESS, [true, new Date(), animeTitle, fileName]);
+                    logger.info(`Перекодування завершено для ${fileName}`);
+                    await pool.query(queries.UPDATE_EPISODE_SUCCESS, [true, new Date(), episodeId]);
                 })
                 .on('error', async (err) => {
                     logger.error(`Помилка при перекодуванні файлу ${filePath}: ${err}`);
-                    await pool.query(queries.UPDATE_EPISODE_ERROR, [err.message, false, animeTitle, fileName]);
+                    await pool.query(queries.UPDATE_EPISODE_ERROR, [err.message, false, episodeId]);
 
                     try {
                         if (fs.existsSync(outputDir)) {
@@ -193,10 +194,9 @@ const queue = async.queue(async (task) => {
                 .run();
         });
     } catch (err) {
-        logger.error(`Помилка при обробці файлу ${filePath}: ${err}`);
+        logger.error(`Помилка при обробці файлу ${fileName}: ${err}`);
     } finally {
-        // Переконаємося, що прапор буде знятий навіть у разі помилки
-        processingFiles.delete(filePath);
+        processingFiles.delete(fileName);
     }
 }
 
@@ -224,16 +224,16 @@ function watchAnimeDirectory() {
           for (let i = 0; i < files.length; i++) {
             const file = files[i];
             const episodeNumber = i + 1;
-            const filePath = path.join(dirPath, file);
+            // const filePath = path.join(dirPath, file);
             const fileName = path.basename(file, '.mkv');
 
             const res = await pool.query(queries.SELECT_EPISODE, [animeTitle, fileName]);
             let episode = res.rows[0];
 
             if (!episode) {
-              queue.push({ filePath, animeTitle, episodeNumber });
+              queue.push({ fileName, animeTitle, episodeNumber });
             } else if (!episode.processed) {
-              queue.push({ filePath, animeTitle, episodeNumber, episode });
+              queue.push({ fileName, animeTitle, episodeNumber, episode });
             }
           }
         } catch (err) {
