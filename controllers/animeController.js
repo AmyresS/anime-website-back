@@ -1,7 +1,5 @@
 const AnimeService = require('../services/animeService');
 
-const ALLOWED_MEDIA_TYPES = ['video', 'audio', 'subtitles'];
-
 exports.getAllAnime = async (req, res) => {
     try {
         const animeList = await AnimeService.getAllAnime();
@@ -30,14 +28,8 @@ exports.getAnimeById = async (req, res) => {
 
 exports.getMedia = async (req, res) => {
     const { id, episodeNumber } = req.params;
-    const { type } = req.query;
-
-    if (!ALLOWED_MEDIA_TYPES.includes(type)) {
-        return res.status(400).json({ message: `Wrong media type: '${type}'. Allowed types: ${ALLOWED_MEDIA_TYPES.join(' / ')}` });
-    }
-
     try {
-        const media = await AnimeService.getMedia(id, episodeNumber, type);
+        const media = await AnimeService.getMedia(id, episodeNumber);
         res.json({ media });
     } catch (error) {
         res.status(500).json({ message: error.message });

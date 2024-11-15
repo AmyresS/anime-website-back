@@ -35,10 +35,10 @@ module.exports = {
     `,
   
     // Запит для отримання шляху та мови медіафайлу за айді епізоду та типом файлу
-    SELECT_MEDIA_BY_EPISODE_AND_TYPE: `
+    SELECT_MEDIA_BY_EPISODE: `
         SELECT "id", "fileType", "fileName", "language" 
         FROM "media_files" 
-        WHERE "episodeId" = $1 AND "fileType" = $2
+        WHERE "episodeId" = $1
     `,
   
     // Запит для отримання айді епізоду за айді аніме та номером епізоду

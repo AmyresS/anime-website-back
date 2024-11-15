@@ -55,12 +55,12 @@ const AnimeService = {
         return result.rows[0];
     },
 
-    async getMedia(animeId, episodeNumber, type) {
+    async getMedia(animeId, episodeNumber) {
         const episode = await pool.query(queries.SELECT_EPISODE_ID_BY_ANIME_AND_NUMBER, [animeId, episodeNumber]);
         if (episode.rowCount === 0) {
             throw new Error('Episode not found');
         }
-        const mediaList = await pool.query(queries.SELECT_MEDIA_BY_EPISODE_AND_TYPE, [episode.rows[0].id, type]);
+        const mediaList = await pool.query(queries.SELECT_MEDIA_BY_EPISODE, [episode.rows[0].id]);
     
         return mediaList.rows;
     },
