@@ -4,19 +4,6 @@ const fs = require('fs');
 const path = require('path');
 const { networkPath } = require('../config/config');
 
-const { createLogger, format, transports } = require('winston');
-const logger = createLogger({
-    level: 'info',
-    format: format.combine(
-      format.timestamp({ format: 'YYYY-MM-DD HH:mm:ss' }),
-      format.printf(({ timestamp, level, message }) => `${timestamp} [${level.toUpperCase()}]: ${message}`)
-    ),
-    transports: [
-      new transports.Console(),
-      new transports.File({ filename: 'application.log' })
-    ],
-  });
-
 const AnimeService = {
     async getAllAnime() {
         const result = await pool.query(queries.SELECT_ANIME);
@@ -68,10 +55,26 @@ const AnimeService = {
         return result.rows[0];
     },
 
+    async getMedia(animeId, episodeNumber, type) {
+        const episode = await pool.query(queries.SELECT_EPISODE_ID_BY_ANIME_AND_NUMBER, [animeId, episodeNumber]);
+        if (episode.rowCount === 0) {
+            throw new Error('Episode not found');
+        }
+        const mediaList = await pool.query(queries.SELECT_MEDIA_BY_EPISODE_AND_TYPE, [episode.rows[0].id, type]);
+    
+        return mediaList.rows;
+    },
+
+    async getMediaFilepath (id) {
+        const result = await pool.query(queries.GET_MEDIA_FILEPATH, [id]);
+        return result.rows[0];
+    },
+
     async streamFile(filePath, res, contentType) {
-        fs.stat(filePath, (err, stats) => {
+        const realPath = path.join(networkPath, filePath);
+        fs.stat(realPath, (err, stats) => {
             if (err) {
-                return res.status(404).json({ message: `${contentType} файл не знайдено` });
+                return res.status(404).json({ message: `${contentType} file not found` });
             }
 
             const range = res.req.headers.range;
@@ -92,39 +95,10 @@ const AnimeService = {
             };
 
             res.writeHead(206, headers);
-            const stream = fs.createReadStream(filePath, { start, end });
+            const stream = fs.createReadStream(realPath, { start, end });
             stream.pipe(res);
         });
     },
-
-    async getAvailableSubtitles(animeId, episodeNumber) {
-        const episode = await pool.query(queries.SELECT_EPISODE_ID_BY_ANIME_AND_NUMBER, [animeId, episodeNumber]);
-        if (episode.rowCount === 0) {
-            throw new Error('Епізод не знайдено');
-        }
-        // const episodeName = `episode_${episodeNumber}`;
-        const subtitlesList = await pool.query(queries.SELECT_MEDIA_BY_EPISODE_AND_TYPE, [episode.rows[0].id, "subtitles"]);
-
-        return subtitlesList.rows;
-        // const subtitlesDir = path.join(networkPath, episodeName);
-
-        // logger.info("hi");
-        // console.log("hi2");
-        // return new Promise((resolve, reject) => {
-        //     fs.readdir(subtitlesDir, (err, files) => {
-        //         if (err) {
-        //             reject('Помилка при зчитуванні субтитрів');
-        //         }
-        //         const subtitles = files
-        //             .filter(file => file.endsWith('.ass'))
-        //             .map(file => ({
-        //                 name: file.split('.')[0],
-        //                 path: file
-        //             }));
-        //         resolve(subtitles);
-        //     });
-        // });
-    }
 };
 
 module.exports = AnimeService;

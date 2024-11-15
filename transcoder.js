@@ -65,9 +65,8 @@ const queue = async.queue(async (task) => {
   }
   
   async function transcodeFile(fileName, animeTitle, episodeNumber, episode) {
-    // const fileName = path.basename(filePath, '.mkv');
     const originalDir = path.join(animeTitle, 'Raw', `${fileName}.mkv`);
-    const outputDir = path.join(networkPath, animeTitle, 'Processed', fileName);
+    const outputDir = path.join(animeTitle, 'Processed', fileName);
 
     // Перевіряємо, чи файл вже обробляється
     if (processingFiles.has(fileName)) {
@@ -100,8 +99,8 @@ const queue = async.queue(async (task) => {
             await pool.query(queries.UPDATE_EPISODE_STATUS, [false, new Date(), null, episodeId]);
         }
 
-        if (!fs.existsSync(outputDir)) {
-            fs.mkdirSync(outputDir, { recursive: true });
+        if (!fs.existsSync(path.join(networkPath, outputDir))) {
+            fs.mkdirSync(path.join(networkPath, outputDir), { recursive: true });
         }
 
         ffmpeg.ffprobe(path.join(networkPath, originalDir), async (err, metadata) => {
@@ -115,12 +114,12 @@ const queue = async.queue(async (task) => {
             const audioStreams = metadata.streams.filter(stream => stream.codec_type === 'audio');
             const subtitleStreams = metadata.streams.filter(stream => stream.codec_type === 'subtitle');
 
-            let command = ffmpeg(path.join(networkPath, originalDir)); // !!! originalDir or fileName (was filePath)
+            let command = ffmpeg(path.join(networkPath, originalDir));
 
             if (videoStreams.length > 0) {
               const videoOutput = path.join(outputDir, 'video.mp4');
               command = command
-                  .output(videoOutput)
+                  .output(path.join(networkPath, outputDir, 'video.mp4'))
                   .noAudio()
                   .videoCodec('copy')
                   .outputOptions(['-map 0:v:0', '-sn']);
@@ -135,7 +134,7 @@ const queue = async.queue(async (task) => {
               const audioOutput = path.join(outputDir, `${audioName}.aac`);
               
               command = command
-                  .output(audioOutput)
+                  .output(path.join(networkPath, outputDir, `${audioName}.aac`))
                   .noVideo()
                   .audioCodec('copy')
                   .outputOptions([`-map 0:a:${index}`, '-vn', '-sn']);
@@ -158,7 +157,7 @@ const queue = async.queue(async (task) => {
               const subtitleOutput = path.join(outputDir, `${subtitleName}.ass`);
               
               command = command
-                  .output(subtitleOutput)
+                  .output(path.join(networkPath, outputDir, `${subtitleName}.ass`))
                   .noVideo()
                   .noAudio()
                   .outputOptions([`-map 0:s:${index}`, '-vn', '-an', '-c:s copy']);
@@ -183,8 +182,8 @@ const queue = async.queue(async (task) => {
                     await pool.query(queries.UPDATE_EPISODE_ERROR, [err.message, false, episodeId]);
 
                     try {
-                        if (fs.existsSync(outputDir)) {
-                            fs.rmSync(outputDir, { recursive: true, force: true });
+                        if (fs.existsSync(path.join(networkPath, outputDir))) {
+                            fs.rmSync(path.join(networkPath, outputDir), { recursive: true, force: true });
                             logger.info(`Папку "${outputDir}" було видалено через помилку.`);
                         }
                     } catch (fsErr) {
@@ -224,7 +223,6 @@ function watchAnimeDirectory() {
           for (let i = 0; i < files.length; i++) {
             const file = files[i];
             const episodeNumber = i + 1;
-            // const filePath = path.join(dirPath, file);
             const fileName = path.basename(file, '.mkv');
 
             const res = await pool.query(queries.SELECT_EPISODE, [animeTitle, fileName]);

@@ -17,16 +17,10 @@ router.delete('/:id', animeController.deleteAnime);
 // Маршрут для пошуку аніме за назвою
 router.get('/search', animeController.searchByTitle);
 
-// Маршрут для потокової передачі відео епізоду
-router.get('/:id/episode/:episodeNumber/video', animeController.streamEpisodeVideo);
+// Маршрут для отримання усіх медіа файлів епізоду конкретних типів (audio/video/subtitles)
+router.get('/:id/episode/:episodeNumber/media', animeController.getMedia);
 
-// Маршрут для отримання списку доступних субтитрів
-router.get('/:id/episode/:episodeNumber/subtitles', animeController.getAvailableSubtitles);
-
-// Маршрут для потокової передачі обраних субтитрів
-router.get('/:id/episode/:episodeNumber/subtitles/:subtitleName', animeController.streamSelectedSubtitle);
-
-// Маршрут для потокової передачі аудіо епізоду
-router.get('/:id/episode/:episodeNumber/audio/:track', animeController.streamEpisodeAudio);
+// Маршрут для потокової передачі обраного файлу
+router.get('/stream/:id', animeController.streamFile);
 
 module.exports = router;

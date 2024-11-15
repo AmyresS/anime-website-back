@@ -36,7 +36,7 @@ module.exports = {
   
     // Запит для отримання шляху та мови медіафайлу за айді епізоду та типом файлу
     SELECT_MEDIA_BY_EPISODE_AND_TYPE: `
-        SELECT "id", "filePath", "fileName", "language" 
+        SELECT "id", "fileType", "fileName", "language" 
         FROM "media_files" 
         WHERE "episodeId" = $1 AND "fileType" = $2
     `,
@@ -149,6 +149,12 @@ module.exports = {
         SELECT * FROM "episodes" 
         WHERE "animeId" = $1
         AND "episodeNumber" = $2
+    `,
+
+    GET_MEDIA_FILEPATH: `
+        SELECT "filePath", "fileType" 
+        FROM "media_files"
+        WHERE "id" = $1
     `,
   };
   
