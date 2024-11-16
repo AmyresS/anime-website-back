@@ -1,5 +1,7 @@
 const AnimeService = require('../services/animeService');
 
+const ALLOWED_MEDIA_TYPES = ['audio', 'video', 'subtitles'];
+
 exports.getAllAnime = async (req, res) => {
     try {
         const animeList = await AnimeService.getAllAnime();

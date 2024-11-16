@@ -76,16 +76,26 @@ const AnimeService = {
             if (err) {
                 return res.status(404).json({ message: `${contentType} file not found` });
             }
-
+    
+            if (contentType === 'text/plain; charset=utf-8' || contentType === 'subtitles') {
+                res.writeHead(200, {
+                    "Content-Length": stats.size,
+                    "Content-Type": contentType,
+                });
+                const stream = fs.createReadStream(realPath);
+                stream.pipe(res);
+                return;
+            }
+    
             const range = res.req.headers.range;
             if (!range) {
                 return res.status(416).send('Requires Range header');
             }
-
+    
             const CHUNK_SIZE = 10 ** 6;
             const start = Number(range.replace(/\D/g, ""));
             const end = Math.min(start + CHUNK_SIZE, stats.size - 1);
-
+    
             const contentLength = end - start + 1;
             const headers = {
                 "Content-Range": `bytes ${start}-${end}/${stats.size}`,
@@ -93,12 +103,13 @@ const AnimeService = {
                 "Content-Length": contentLength,
                 "Content-Type": contentType,
             };
-
+    
             res.writeHead(206, headers);
             const stream = fs.createReadStream(realPath, { start, end });
             stream.pipe(res);
         });
-    },
+    }
+    
 };
 
 module.exports = AnimeService;
